@@ -3,100 +3,76 @@
 # Synopsis: This script performs a backup of a specified directory, manages backup rotation, and sends notifications upon completion or failure.
 
 # Configuration
-SOURCE_DIR="/path/to/source"               # Directory to be backed up
-BACKUP_DIR="/path/to/backup"               # Where backups will be stored
+SOURCE_DIR="/home/sasa/training/docker"     # Directory to be backed up
+BACKUP_DIR="/home/sasa/training/temp"       # Where backups will be stored
 MAX_BACKUPS=5                              # Number of backups to keep
-LOG_FILE="/var/log/backup.log"             # Log file
-EMAIL="your@email.com"                     # Email for notifications
+LOG_FILE="/home/sasa/training/temp/backup.log"             # Log file
+TIMESTAMP=$(date '+%Y%m%d_%H%M%S')         # Timestamp format for backup files
 
-# Function for logging messages
-log_message() {
-    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-    echo "$message" >> "$LOG_FILE"
-    echo "$message"
+
+check_backup_dir() {
+    local dir="$1"
+    
+    # Check if directory exists
+    if [ ! -d "$dir" ]; then
+        echo "Backup directory does not exist. Creating: $dir"
+        mkdir -p "$dir"
+        
+        # Check if creation was successful
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to create backup directory: $dir"
+            return 1
+        fi
+    fi
+    
+    # Check write permissions
+    if [ ! -w "$dir" ]; then
+        echo "ERROR: No write permission in backup directory: $dir"
+        return 1
+    fi
+    
+    echo "Backup directory is ready: $dir"
+    return 0
 }
 
-# Function for sending email notifications
-send_notification() {
-    local subject="$1"
-    local message="$2"
-    echo "$message" | mail -s "$subject" "$EMAIL"
+clean_up(){
+    local location="$1"
+    local files_to_delete=$(find "$location" -type f -name "*.tar.gz" -printf '%T@ %f\n' | \
+                            sort -n | \
+                            head -n +"$MAX_BACKUPS" | \
+                            awk '{print $2}')
+    
+    echo "Cleaning up old backups: $files_to_delete"
+    if [ -n "$files_to_delete" ]; then
+        echo "Deleting old backups"
+        while read -r file; do
+            echo "Deleting: $file"
+            rm "$location/$file"
+
+            if [ $? -ne 0 ]; then
+                echo "ERROR: Failed to delete old backup: $file"
+                return 1
+            fi
+        done <<< "$files_to_delete"
+        echo "Old backups cleaned up"
+    else
+        echo "No old backups to clean up"
+    fi
+
+    return 0
 }
 
-# Check if the script is run as root
-if [[ $EUID -ne 0 ]]; then
-    log_message "ERROR: Script must be run as root"
+check_backup_dir "$BACKUP_DIR" || exit 1
+
+BACKUP_NAME="backup_${TIMESTAMP}.tar.gz"
+
+tar -czPf  "$BACKUP_DIR/$BACKUP_NAME" "$SOURCE_DIR"
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Backup failed!"
     exit 1
+else
+    echo "Backup successfully created: $BACKUP_NAME"
 fi
 
-# Check if the source directory exists
-if [[ ! -d "$SOURCE_DIR" ]]; then
-    log_message "ERROR: Source directory $SOURCE_DIR does not exist"
-    send_notification "Backup Failed" "Source directory $SOURCE_DIR does not exist"
-    exit 1
-fi
-
-# Create backup directory if it does not exist
-mkdir -p "$BACKUP_DIR"
-
-# Generate backup file name with timestamp
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="backup_${TIMESTAMP}.tar.gz"
-BACKUP_PATH="${BACKUP_DIR}/${BACKUP_FILE}"
-
-# Check available space
-SOURCE_SIZE=$(du -sb "$SOURCE_DIR" | awk '{print $1}')
-AVAILABLE_SPACE=$(df -B1 "$BACKUP_DIR" | awk 'NR==2 {print $4}')
-
-if [[ $SOURCE_SIZE -gt $AVAILABLE_SPACE ]]; then
-    log_message "ERROR: Not enough space for backup"
-    send_notification "Backup Failed" "Not enough space for backup"
-    exit 1
-fi
-
-# Perform the backup
-log_message "Starting backup process..."
-
-tar -czf "$BACKUP_PATH" "$SOURCE_DIR" 2>/tmp/backup_error
-
-if [[ $? -ne 0 ]]; then
-    ERROR_MSG=$(cat /tmp/backup_error)
-    log_message "ERROR: Backup failed: $ERROR_MSG"
-    send_notification "Backup Failed" "Backup failed: $ERROR_MSG"
-    rm -f /tmp/backup_error
-    exit 1
-fi
-
-rm -f /tmp/backup_error
-
-# Verify the integrity of the backup file
-if ! tar -tzf "$BACKUP_PATH" >/dev/null 2>&1; then
-    log_message "ERROR: Backup file is corrupted"
-    send_notification "Backup Failed" "Backup file is corrupted"
-    rm -f "$BACKUP_PATH"
-    exit 1
-fi
-
-# Delete old backups
-cd "$BACKUP_DIR" || exit
-BACKUP_COUNT=$(ls -1 backup_*.tar.gz 2>/dev/null | wc -l)
-
-if [[ $BACKUP_COUNT -gt $MAX_BACKUPS ]]; then
-    log_message "Deleting old backups..."
-    ls -t backup_*.tar.gz | tail -n +$((MAX_BACKUPS + 1)) | xargs rm -f
-fi
-
-# Calculate the size of the backup
-BACKUP_SIZE=$(du -h "$BACKUP_PATH" | cut -f1)
-
-# Successful completion
-COMPLETION_MSG="Backup successfully completed\nFile: $BACKUP_FILE\nSize: $BACKUP_SIZE"
-log_message "$COMPLETION_MSG"
-send_notification "Backup Success" "$COMPLETION_MSG"
-
-# Create MD5 checksum
-md5sum "$BACKUP_PATH" > "${BACKUP_PATH}.md5"
-
-# Set permissions
-chmod 600 "$BACKUP_PATH"
-chmod 600 "${BACKUP_PATH}.md5"
+clean_up "$BACKUP_DIR"
