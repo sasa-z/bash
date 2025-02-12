@@ -3,6 +3,7 @@
 # Define thresholds
 CPU_THRESHOLD=80
 MEM_THRESHOLD=80
+DISK_THRESHOLD=80
 CLEANUP_INTERVAL=900  # 15 minuta u sekundima
 last_cleanup=0
 
@@ -41,6 +42,12 @@ while true; do
         find /tmp -type f -atime +7 -delete
         last_cleanup=$current_time
     fi
+
+    # Check disk usage
+    echo "$(date): Checking disk usage..."
+    df -h | awk -v threshold=$DISK_THRESHOLD 'NR>1 && $5+0 > threshold {print $6": "$5" used"}' | while read line; do
+        echo "$(date): WARNING - High disk usage detected: $line"
+    done
     
     sleep 3
 done
